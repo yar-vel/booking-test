@@ -1,0 +1,206 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  main:
+    name: ${PROJECT_TAG}-main
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    name: ${PROJECT_TAG}-prometheus-data
+  grafana-storage:
+    name: ${PROJECT_TAG}-grafana-storage
+  postgres-data:
+    name: ${PROJECT_TAG}-postgres-data
+  api-node-modules:
+    name: ${PROJECT_TAG}-api-node-modules
+
+secrets:
+  grafana:
+    file: ./secrets/grafana.txt
+
+services:
+  grafana:
+    build:
+      context: ./grafana
+    container_name: ${PROJECT_TAG}-grafana
+    networks:
+      - main
+    ports:
+      - 9000:3000
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    secrets:
+      - grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: no
+    environment:
+      - TZ
+      - GF_SECURITY_ADMIN_USER
+      - GF_SECURITY_ADMIN_PASSWORD__FILE
+      - GF_USERS_ALLOW_SIGN_UP
+      - GF_INSTALL_PLUGINS
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.125'
+          memory: 128M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  prometheus:
+    build:
+      context: ./prometheus
+    container_name: ${PROJECT_TAG}-prometheus
+    networks:
+      - main
+    expose:
+      - 9090
+    volumes:
+      - prometheus-data:/prometheus
+    depends_on:
+      postgres-exporter:
+        condition: service_started
+    restart: no
+    environment:
+      - TZ
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.125'
+          memory: 64M
+    logging: *default-logging
+
+  postgres:
+    build:
+      context: ./postgres
+    container_name: ${PROJECT_TAG}-postgres
+    networks:
+      - main
+    expose:
+      - ${POSTGRES_PORT}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    restart: no
+    environment:
+      - TZ
+      - POSTGRES_HOST
+      - POSTGRES_PORT
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: ${PROJECT_TAG}-postgres-exporter
+    networks:
+      - main
+    expose:
+      - 9187
+    environment:
+      - TZ
+      - DATA_SOURCE_URI=${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - DATA_SOURCE_USER=${POSTGRES_USER}
+      - DATA_SOURCE_PASS=${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: no
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.125'
+          memory: 64M
+    logging: *default-logging
+  adminer:
+    image: adminer:standalone
+    container_name: ${PROJECT_TAG}-adminer
+    restart: no
+    networks:
+      - main
+    ports:
+      - 8080:8080
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+    logging: *default-logging
+
+  api:
+    build:
+      context: ./api
+      target: development
+    container_name: ${PROJECT_TAG}-api
+    networks:
+      - main
+    ports:
+      - ${API_PORT}:${API_PORT}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./api:/usr/src/app
+      - api-node-modules:/usr/src/app/node_modules
+    restart: no
+    environment:
+      - TZ
+      - API_HOST
+      - API_PORT
+      - POSTGRES_HOST
+      - POSTGRES_PORT
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://${API_HOST}:${API_PORT}/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
