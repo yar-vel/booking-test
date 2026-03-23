@@ -20,5 +20,6 @@ docker-compose up -d
 Он генерирует 50к запросов с разными `user_id` на одно и то же место.
 
 ```bash
+# находясь в ./api
 npm run test:load
 ```
